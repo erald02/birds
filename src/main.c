@@ -1,6 +1,5 @@
 #include "boids.h"
 #include "cube.h"
-#include "physics.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_events.h>
 #include <SDL2/SDL_keycode.h>
@@ -10,8 +9,14 @@
 #include <time.h>
 
 boid_t flock[NUM_BOIDS];
-pthread_mutex_t locks[NUM_BOIDS];
 camera_t camera;
+
+float random_float_r(unsigned int *seed, float min, float max) {
+  float scale = (float)rand_r(seed) / (float)RAND_MAX;
+  return min + scale * (max - min);
+}
+
+struct timespec start, end;
 
 int main() {
   camera.x = SIM_BOUNDS / 2;
@@ -33,16 +38,11 @@ int main() {
       SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
   SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
-  int num_threads = NUM_BOIDS;
-  pthread_t threads[num_threads];
-  int thread_ids[num_threads];
   srand(time(NULL));
   int running = 1;
   unsigned int seed = time(NULL) ^ 1;
   for (int i = 0; i < NUM_BOIDS; i++) {
-    pthread_mutex_init(&locks[i], NULL);
     flock[i].id = i;
-    flock[i].die = &running;
     flock[i].x = random_float_r(&seed, 0, SIM_BOUNDS);
     flock[i].y = random_float_r(&seed, 0, SIM_BOUNDS);
     flock[i].z = random_float_r(&seed, 0, SIM_BOUNDS);
@@ -66,10 +66,11 @@ int main() {
     }
   }
 
-  for (int i = 0; i < num_threads; i++) {
-    thread_ids[i] = i;
-    pthread_create(&threads[i], NULL, worker_logic, &thread_ids[i]);
-  }
+  Uint32 last_time = SDL_GetTicks();
+  int frame_count = 0;
+  char window_title[64];
+
+  init_cuda(flock);
 
   while (running) {
     while (SDL_PollEvent(&event)) {
@@ -78,6 +79,7 @@ int main() {
       }
     }
     const Uint8 *state = SDL_GetKeyboardState(NULL);
+    step_physics_cuda(flock);
 
     if (state[SDL_SCANCODE_W])
       camera.z += 2.0f;
@@ -108,24 +110,29 @@ int main() {
 
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     for (size_t i = 0; i < NUM_BOIDS; i++) {
-      pthread_mutex_lock(&locks[i]);
       cube_t cube =
           cube_from_coords((point_t){flock[i].x, flock[i].y, flock[i].z}, 2);
       SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
       render_cube(renderer, &camera, &cube);
-      pthread_mutex_unlock(&locks[i]);
     }
 
     SDL_RenderPresent(renderer);
+    frame_count++;
+    Uint32 current_time = SDL_GetTicks();
 
-    SDL_Delay(16);
+    if (current_time - last_time >= 1000) {
+      float fps = frame_count / ((current_time - last_time) / 1000.0f);
+
+      printf("\rFPS: %6.1f | Boids: %d       ", fps, NUM_BOIDS);
+      fflush(stdout);
+
+      frame_count = 0;
+      last_time = current_time;
+    }
+    // SDL_Delay(16);
   }
 
   printf("Shutting down cleanly...\n");
-
-  for (int i = 0; i < num_threads; i++) {
-    pthread_join(threads[i], NULL);
-  }
 
   SDL_DestroyRenderer(renderer);
   SDL_DestroyWindow(window);
